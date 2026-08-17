@@ -1,0 +1,81 @@
+name: SnapNote stability pass
+on:
+  push:
+    branches: [phone-web-redesign]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Harden auth and interaction flow
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          a=Path('appA.js')
+          s=a.read_text()
+          old='let currentProfile=null,authMode="login",recoveryActive=false;'
+          new='let currentProfile=null,authMode="login",recoveryActive=false,sessionSeq=0;'
+          if old in s:
+              s=s.replace(old,new,1)
+          marker='const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],K='
+          helper='const setBusy=(btn,busy,label)=>{if(!btn)return;if(busy){btn.dataset.oldText=btn.textContent;btn.disabled=true;btn.setAttribute("aria-busy","true");if(label)btn.textContent=label}else{btn.disabled=false;btn.removeAttribute("aria-busy");if(btn.dataset.oldText){btn.textContent=btn.dataset.oldText;delete btn.dataset.oldText}}};const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],K='
+          if marker in s:
+              s=s.replace(marker,helper,1)
+          oldgo='function go(id){let p=$("#"+id);if(!p)return;$$(".page").forEach(x=>x.classList.toggle("active",x===p));$$(".tab").forEach(x=>x.classList.toggle("active",x.dataset.go===id));window.scrollTo(0,0);'
+          newgo='function go(id){let p=$("#"+id);if(!p)return;let already=p.classList.contains("active");$$(".page").forEach(x=>x.classList.toggle("active",x===p));$$(".tab").forEach(x=>x.classList.toggle("active",x.dataset.go===id));if(!already)requestAnimationFrame(()=>window.scrollTo({top:0,left:0,behavior:"auto"}));'
+          if oldgo in s:
+              s=s.replace(oldgo,newgo,1)
+          a.write_text(s)
+
+          p=Path('appC.js')
+          s=p.read_text()
+          old='async function applySession(session){if(recoveryActive)return;if(!session){currentProfile=null;$("#login").classList.remove("hidden");$("#pending").classList.add("hidden");$("#recovery").classList.add("hidden");return}let p=await loadProfile(session.user);if(!p){$("#authMsg").textContent="Account profile could not be loaded.";$("#login").classList.remove("hidden");return}currentProfile=p;'
+          new='async function applySession(session){if(recoveryActive)return;let seq=++sessionSeq;if(!session){currentProfile=null;$("#login").classList.remove("hidden");$("#pending").classList.add("hidden");$("#recovery").classList.add("hidden");return}let p=await loadProfile(session.user);if(seq!==sessionSeq)return;if(!p){$("#authMsg").textContent="Account profile could not be loaded. Please try again.";$("#login").classList.remove("hidden");return}currentProfile=p;'
+          if old not in s:
+              raise SystemExit('applySession pattern not found')
+          s=s.replace(old,new,1)
+
+          old='$("#authSubmit").disabled=true;$("#authMsg").textContent="Please wait…";try{'
+          new='setBusy($("#authSubmit"),true,"Please wait…");$("#authMsg").textContent="";try{'
+          if old not in s: raise SystemExit('auth busy pattern not found')
+          s=s.replace(old,new,1)
+          old='}finally{$("#authSubmit").disabled=false}};'
+          new='}finally{setBusy($("#authSubmit"),false)}};'
+          if old not in s: raise SystemExit('auth finally pattern not found')
+          s=s.replace(old,new,1)
+
+          old='$("#forgotPassword").disabled=true;$("#authMsg").textContent="Sending reset email…";let {error}=await sb.auth.resetPasswordForEmail(email,{redirectTo:location.origin+location.pathname});$("#forgotPassword").disabled=false;'
+          new='setBusy($("#forgotPassword"),true,"Sending…");$("#authMsg").textContent="Sending reset email…";let {error}=await sb.auth.resetPasswordForEmail(email,{redirectTo:location.origin+location.pathname});setBusy($("#forgotPassword"),false);'
+          if old not in s: raise SystemExit('reset pattern not found')
+          s=s.replace(old,new,1)
+
+          old='async function logoutAccount(){await sb.auth.signOut();currentProfile=null;$("#pending").classList.add("hidden");$("#login").classList.remove("hidden")}'
+          new='async function logoutAccount(){let btn=$("#logout");setBusy(btn,true,"Logging out…");try{await sb.auth.signOut();currentProfile=null;sessionSeq++;$("#pending").classList.add("hidden");$("#login").classList.remove("hidden")}catch(e){alert(e.message||"Could not log out. Please try again.")}finally{setBusy(btn,false)}}'
+          if old not in s: raise SystemExit('logout pattern not found')
+          s=s.replace(old,new,1)
+
+          old='sb.auth.getSession().then(({data})=>{if(recoveryFromUrl()&&data.session)showPasswordRecovery();else applySession(data.session)});sb.auth.onAuthStateChange((event,session)=>setTimeout(()=>{if(event==="PASSWORD_RECOVERY"){showPasswordRecovery();return}if(!recoveryActive)applySession(session)},0));'
+          new='sb.auth.getSession().then(({data,error})=>{if(error){console.error(error);$("#authMsg").textContent="Could not restore your session. Please log in again.";return}if(recoveryFromUrl()&&data.session)showPasswordRecovery();else applySession(data.session)});sb.auth.onAuthStateChange((event,session)=>setTimeout(()=>{if(event==="PASSWORD_RECOVERY"){showPasswordRecovery();return}if(event==="TOKEN_REFRESHED")return;if(!recoveryActive)applySession(session)},0));'
+          if old not in s: raise SystemExit('auth init pattern not found')
+          s=s.replace(old,new,1)
+          p.write_text(s)
+
+          css=Path('style.css')
+          c=css.read_text()
+          c+='\nbutton:disabled{opacity:.58;cursor:not-allowed;transform:none!important}button[aria-busy="true"]{position:relative}.page{will-change:opacity,transform}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}.page.active{animation:none!important}.tile{transition:none!important}}\n'
+          css.write_text(c)
+          PY
+      - name: Commit stability fixes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add appA.js appC.js style.css
+          git diff --cached --quiet || git commit -m "Harden beta auth and interaction flow"
+          git push

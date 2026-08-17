@@ -1,0 +1,45 @@
+name: Sync production snapshot
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sync-production.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download current production files
+        run: |
+          curl -fsSL 'https://snapnote-mobile-test.vercel.app/' -o index.html
+          curl -fsSL 'https://snapnote-mobile-test.vercel.app/style.css?v=manager2' -o style.css
+          curl -fsSL 'https://snapnote-mobile-test.vercel.app/appA.js?v=manager2' -o appA.js
+          curl -fsSL 'https://snapnote-mobile-test.vercel.app/appB.js?v=manager2' -o appB.js
+          curl -fsSL 'https://snapnote-mobile-test.vercel.app/appC.js?v=manager2' -o appC.js
+      - name: Enable remembered staff login
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('appA.js')
+          s=p.read_text()
+          old='const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);'
+          new='const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,storage:window.localStorage,storageKey:"snapnote-staff-session"}});'
+          if old in s:
+              s=s.replace(old,new,1)
+          elif 'persistSession:true' not in s:
+              raise SystemExit('Could not find Supabase client initialization')
+          p.write_text(s)
+          PY
+      - name: Commit complete production snapshot
+        run: |
+          git config user.name 'SnapNote Sync'
+          git config user.email 'actions@users.noreply.github.com'
+          git add index.html style.css appA.js appB.js appC.js
+          git diff --cached --quiet && exit 0
+          git commit -m 'Sync working production build with remembered login'
+          git push
